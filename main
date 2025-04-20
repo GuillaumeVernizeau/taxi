@@ -1,0 +1,17 @@
+#!./.venv/bin/python3
+
+from src import parse_args
+# from src.bruteforce import bruteforce
+from src.Brutefroce import Bruteforce
+from src.qtable import qtable
+
+def entrypoint():
+    args = parse_args()
+
+    if args.bruteforce:
+        bruteforce = Bruteforce()
+        bruteforce.launch()
+    else: qtable(args)
+
+if __name__ == "__main__":
+    entrypoint()
