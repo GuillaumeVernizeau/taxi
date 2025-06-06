@@ -1,3 +1,5 @@
 gymnasium
 matplotlib
 pygame
+hyperopt
+setuptools

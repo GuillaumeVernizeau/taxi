@@ -1,16 +1,17 @@
 import pickle
 import time
 from typing import List
-import gymnasium as gym
 import numpy as np
+from src.customEnv import CustomTaxiEnv
 from src.results import EpisodeResult
 from .args import QParameters
 
 CYAN = "\033[96m"
 OFF = "\033[0m"
 
+
 def run(args: QParameters, is_training=True, render=False) -> List[EpisodeResult]:
-    env = gym.make("Taxi-v3", render_mode="human" if render else None)
+    env = CustomTaxiEnv(mapPath=args.map_path, render_mode="human" if render else None)
 
     if is_training:
         q = np.zeros((env.observation_space.n, env.action_space.n))  # init a 500 x 6 array
@@ -29,9 +30,9 @@ def run(args: QParameters, is_training=True, render=False) -> List[EpisodeResult
     episodes = args.training_episodes if is_training else args.play_episodes
 
     for i in range(episodes):
-        state = env.reset()[0]      # states: 0 to 63, 0=top left corner,63=bottom right corner
-        terminated = False          # True when fall in hole or reached goal
-        truncated = False           # True when actions > 200
+        state = env.reset()[0]  # states: 0 to 63, 0=top left corner,63=bottom right corner
+        terminated = False  # True when fall in hole or reached goal
+        truncated = False  # True when actions > 200
         episodeResult: EpisodeResult = EpisodeResult(startTime=time.time(), episode=i)
         episodeResult.setup(epsilon, learning_rate_a, discount_factor_g)
         rewards = 0

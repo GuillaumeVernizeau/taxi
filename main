@@ -1,17 +1,38 @@
 #!./.venv/bin/python3
 
 from src import parse_args
-# from src.bruteforce import bruteforce
-from src.Brutefroce import Bruteforce
+from src.bruteforce import BruteforceMultiple
 from src.qtable import qtable
+from src.optimizer import Optimizer
+from src.taxi_dqn import run_deep_q, train_on_multiple_maps  # ⬅️ ajout de l'import
+import glob
 
 def entrypoint():
     args = parse_args()
 
-    if args.bruteforce:
-        bruteforce = Bruteforce()
+    if args.optimize_with_bayesian or args.optimize_with_variations:
+        print("🔍 Mode optimisation activé !")
+        optimizer = Optimizer(base_params=args)
+        best_params = optimizer.optimize()
+        print("\n🚀 Entraînement final avec les meilleurs paramètres trouvés...")
+        qtable(best_params)
+
+    elif args.bruteforce:
+        bruteforce = BruteforceMultiple(args, 100, "human")
         bruteforce.launch()
-    else: qtable(args)
+
+    elif args.deep_q:
+        # Si aucune carte précisée, on entraîne sur toutes les maps disponibles
+        if args.map_path is None and not args.skipTraining:
+            print("🌐 Entraînement sur toutes les cartes .map disponibles…")
+            maps = sorted(glob.glob("maps/*.map"))  # ✅ récupère tous les fichiers .map
+            train_on_multiple_maps(maps, args.training_episodes, args)
+        else:
+            run_deep_q(args)
+
+
+    else:
+        qtable(args)
 
 if __name__ == "__main__":
     entrypoint()
