@@ -100,7 +100,9 @@ class DQNAgent:
         return torch.tensor([
             row / self.env.rows,
             col / self.env.cols,
-            *features  # total: 2 + 9 = 11
+            pass_idx,
+            dest_idx,
+            *features
         ], dtype=torch.float32, device=self.device)
 
 
@@ -179,7 +181,7 @@ class DQNAgent:
         return results
 
 
-    def play(self, episodes: int, render: bool = False, max_steps: int = 200):
+    def play(self, episodes: int, render: bool = False, max_steps: int = 1000):
         self.env.render_mode = "human" if render else None
 
         for ep in trange(episodes, desc="Play episodes"):
@@ -192,7 +194,8 @@ class DQNAgent:
                     self._state_to_tensor(state_idx).unsqueeze(0)
                 ).argmax().item()
 
-                state_idx, reward, terminated, truncated, _ = self.env.step(action)
+                # state_idx, reward, terminated, truncated, _ = self.env.step(action)
+                state_idx, reward, terminated, truncated, _ = self.env.step_hist(action)
                 total_reward += reward
                 done = terminated or truncated
                 step += 1

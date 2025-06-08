@@ -151,24 +151,20 @@ class CustomTaxiEnv(TaxiEnv):
 
 
     def step_hist(self, action: int):
-        transitions = self.P[self.s][action]
-        i = np.random.choice(len(transitions))
-        p, s, reward, terminated = transitions[i]
-        self.s = s
-        self.lastaction = action
+        """Perform a normal step and apply a loop penalty."""
+        s, reward, terminated, truncated, info = super().step(action)
 
-        # Extraire position taxi
         taxi_row, taxi_col, _, _ = self.decode(s)
         curr_pos = (taxi_row, taxi_col)
         self.prev_positions.append(curr_pos)
         if len(self.prev_positions) > self.max_history:
             self.prev_positions.pop(0)
 
-        # Pénalité pour aller-retour ou boucle
         if self.prev_positions.count(curr_pos) >= 3:
-            reward -= 2  # ajuste la valeur selon l’effet souhaité
+            reward -= 2
 
-        return s, reward, terminated, False, {}
+        return s, reward, terminated, truncated, info
+
     
     def get_surroundings(self, row, col, pass_idx, dest_idx):
         passenger_row, passenger_col = self.locs[pass_idx] if pass_idx < len(self.locs) else (-1, -1)
