@@ -5,6 +5,7 @@ from typing import Optional
 from gymnasium import spaces
 
 WINDOW_SIZE = (550, 350)
+MAX_MAP_SIZE = 10
 
 DEFAULT_MAP = [
     "+---------+",
@@ -94,7 +95,12 @@ class CustomTaxiEnv(TaxiEnv):
         self.median_vert = None
         self.background_img = None
         self.prev_positions = []
-        self.max_history = 4
+        self.max_history = 6
+
+    def reset(self, *args, **kwargs):
+        """Clear loop history and reset the environment."""
+        self.prev_positions.clear()
+        return super().reset(*args, **kwargs)
 
     def encode(self, taxi_row, taxi_col, pass_loc, dest_idx):
         i = taxi_row
@@ -148,7 +154,7 @@ class CustomTaxiEnv(TaxiEnv):
         can_go_west  = int(desc[1 + row, 2 * col] == b":")
 
         return [can_go_south, can_go_north, can_go_east, can_go_west]
-
+    
 
     def step_hist(self, action: int):
         """Perform a normal step and apply a loop penalty."""
@@ -160,8 +166,20 @@ class CustomTaxiEnv(TaxiEnv):
         if len(self.prev_positions) > self.max_history:
             self.prev_positions.pop(0)
 
-        if self.prev_positions.count(curr_pos) >= 3:
+        # Penalise standing still on the same tile multiple times
+        if len(self.prev_positions) >= 2 and self.prev_positions[-1] == self.prev_positions[-2]:
+            reward -= 3
+        elif self.prev_positions.count(curr_pos) >= 3:
             reward -= 2
+
+        # Penalise simple back-and-forth loops
+        if len(self.prev_positions) >= 4:
+            if (
+                self.prev_positions[-1] == self.prev_positions[-3]
+                and self.prev_positions[-2] == self.prev_positions[-4]
+            ):
+                # Stronger penalty for back-and-forth loops
+                reward -= 5
 
         return s, reward, terminated, truncated, info
 
@@ -185,6 +203,32 @@ class CustomTaxiEnv(TaxiEnv):
         possible_moves = self.get_possible_moves(row, col)  # 4 valeurs
 
         return rel_passenger + rel_destination + possible_moves  # total = 3 + 2 + 4 = 9 features
+    
+    def get_full_view(self, row: int, col: int, pass_idx: int, dest_idx: int) -> list[int]:
+        """Return a flattened representation of the entire map.
+
+        For every cell in a MAX_MAP_SIZE x MAX_MAP_SIZE grid, we encode:
+        [south, north, east, west, is_taxi, has_passenger, is_destination].
+        Cells outside the actual map are padded with zeros. A final flag
+        indicates whether the passenger is already in the taxi.
+        """
+        passenger_pos = self.locs[pass_idx] if pass_idx < len(self.locs) else (-1, -1)
+        destination_pos = self.locs[dest_idx]
+
+        features: list[int] = []
+        for r in range(MAX_MAP_SIZE):
+            for c in range(MAX_MAP_SIZE):
+                if r < self.rows and c < self.cols:
+                    moves = self.get_possible_moves(r, c)
+                    is_taxi = int((r, c) == (row, col))
+                    has_passenger = int(passenger_pos == (r, c))
+                    is_destination = int(destination_pos == (r, c))
+                    features.extend(moves + [is_taxi, has_passenger, is_destination])
+                else:
+                    features.extend([0, 0, 0, 0, 0, 0, 0])
+
+        features.append(int(pass_idx == len(self.locs)))
+        return features
 
 
 

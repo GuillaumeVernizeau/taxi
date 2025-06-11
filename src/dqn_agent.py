@@ -1,4 +1,6 @@
-import random, collections, time
+import random
+import collections
+import time
 from typing import Deque, List, Tuple
 
 import numpy as np
@@ -11,21 +13,54 @@ from .args import QParameters
 from .results import EpisodeResult
 from .customEnv import CustomTaxiEnv
 from tqdm import trange, tqdm
+
 tqdm._instances.clear()
 
 
 class QNetwork(nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, hidden_size: int = 128, num_passengers: int = 5, embedding_dim: int = 4):
+    """Neural network used by the DQN agent."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        hidden_size: int = 128,
+        num_passengers: int = 5,
+        embedding_dim: int = 4,
+        conv_channels: int = 32,
+    ) -> None:
         super().__init__()
 
+        # Embed passenger and destination indices so that the model can
+        # generalise to new combinations of locations.
         self.passenger_embedding = nn.Embedding(num_passengers, embedding_dim)
         self.destination_embedding = nn.Embedding(num_passengers - 1, embedding_dim)
 
-        self.fc_input = input_dim - 2 + 2 * embedding_dim  # remove 2 scalar idx, add 2 embeddings
+        # We replace the previous two-layer MLP with a deeper architecture.
+        # Before the fully connected layers, the input is processed by a small
+        # 1D convolution stack which aims to capture local correlations between
+        # the different features (row, column, distances, etc.).
+
+        # Number of features once indices have been replaced by embeddings
+        self.base_input = input_dim - 2 + 2 * embedding_dim
+
+        self.conv = nn.Sequential(
+            nn.Conv1d(1, conv_channels, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(conv_channels, conv_channels, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Dropout(p=0.1),
+        )
+
+        conv_out_dim = conv_channels * self.base_input
 
         self.net = nn.Sequential(
-            nn.Linear(self.fc_input, hidden_size),
+            nn.Linear(conv_out_dim, hidden_size),
             nn.ReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(p=0.2),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, output_dim),
@@ -40,12 +75,19 @@ class QNetwork(nn.Module):
 
         other = torch.cat([x[:, :2], x[:, 4:]], dim=1)
         x = torch.cat([other, passenger_emb, dest_emb], dim=1)
+
+        # Convolution expects (B, C, L) input
+        x = x.unsqueeze(1)
+        x = self.conv(x)
+        x = torch.flatten(x, 1)
         return self.net(x)
 
 
 class ReplayBuffer:
     def __init__(self, capacity: int = 50_000):
-        self.buffer: Deque[Tuple[np.ndarray, int, float, np.ndarray, bool]] = collections.deque(maxlen=capacity)
+        self.buffer: Deque[Tuple[np.ndarray, int, float, np.ndarray, bool]] = (
+            collections.deque(maxlen=capacity)
+        )
 
     def push(self, *transition):
         self.buffer.append(transition)
@@ -81,8 +123,18 @@ class DQNAgent:
         self.state_size = example_state.shape[0]
         self.action_size = env.action_space.n
 
-        self.policy_net = QNetwork(self.state_size, self.action_size, hidden_size=256, num_passengers=self.num_passengers).to(self.device)
-        self.target_net = QNetwork(self.state_size, self.action_size, hidden_size=256, num_passengers=self.num_passengers).to(self.device)
+        self.policy_net = QNetwork(
+            self.state_size,
+            self.action_size,
+            hidden_size=256,
+            num_passengers=self.num_passengers,
+        ).to(self.device)
+        self.target_net = QNetwork(
+            self.state_size,
+            self.action_size,
+            hidden_size=256,
+            num_passengers=self.num_passengers,
+        ).to(self.device)
 
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
@@ -97,14 +149,11 @@ class DQNAgent:
     def _state_to_tensor(self, state_idx: int) -> torch.Tensor:
         row, col, pass_idx, dest_idx = self.env.unwrapped.decode(state_idx)
         features = self.env.get_surroundings(row, col, pass_idx, dest_idx)
-        return torch.tensor([
-            row / self.env.rows,
-            col / self.env.cols,
-            pass_idx,
-            dest_idx,
-            *features
-        ], dtype=torch.float32, device=self.device)
-
+        return torch.tensor(
+            [row / self.env.rows, col / self.env.cols, pass_idx, dest_idx, *features],
+            dtype=torch.float32,
+            device=self.device,
+        )
 
     def select_action(self, state_idx: int) -> int:
         if random.random() < self.epsilon:
@@ -117,14 +166,19 @@ class DQNAgent:
         if len(self.buffer) < self.batch_size:
             return
 
-        states, actions, rewards, next_states, dones = self.buffer.sample(self.batch_size)
+        states, actions, rewards, next_states, dones = self.buffer.sample(
+            self.batch_size
+        )
         states = states.to(self.device)
         next_states = next_states.to(self.device)
 
         q_values = self.policy_net(states).gather(1, actions.to(self.device))
         with torch.no_grad():
             max_next_q = self.target_net(next_states).max(1, keepdim=True)[0]
-            target_q = rewards.to(self.device) + (1 - dones.to(self.device)) * self.gamma * max_next_q
+            target_q = (
+                rewards.to(self.device)
+                + (1 - dones.to(self.device)) * self.gamma * max_next_q
+            )
 
         loss = self.criterion(q_values, target_q)
         self.optimizer.zero_grad()
@@ -138,7 +192,9 @@ class DQNAgent:
 
         for ep in trange(episodes, desc="Episodes", position=0):
             map_path = random.choice(map_paths)
-            self.env = CustomTaxiEnv(map_path)  # recharge un env différent à chaque épisode
+            self.env = CustomTaxiEnv(
+                map_path
+            )  # recharge un env différent à chaque épisode
             state_idx, _ = self.env.reset()
 
             result = EpisodeResult(startTime=time.time(), episode=ep)
@@ -147,7 +203,9 @@ class DQNAgent:
 
             while not done and result.steps < max_steps:
                 action = self.select_action(state_idx)
-                next_state_idx, reward, terminated, truncated, _ = self.env.step_hist(action)
+                next_state_idx, reward, terminated, truncated, _ = self.env.step_hist(
+                    action
+                )
                 done = terminated or truncated
                 total_reward += reward
 
@@ -156,7 +214,7 @@ class DQNAgent:
                     action,
                     reward,
                     self._state_to_tensor(next_state_idx).cpu().numpy(),
-                    done
+                    done,
                 )
 
                 state_idx = next_state_idx
@@ -180,9 +238,10 @@ class DQNAgent:
 
         return results
 
-
-    def play(self, episodes: int, render: bool = False, max_steps: int = 1000):
+    def play(self, episodes: int, render: bool = False, max_steps: int = 50):
         self.env.render_mode = "human" if render else None
+        # Ensure the network runs in evaluation mode to disable dropout
+        self.policy_net.eval()
 
         for ep in trange(episodes, desc="Play episodes"):
             state_idx, _ = self.env.reset()
@@ -190,9 +249,11 @@ class DQNAgent:
             total_reward = 0
 
             while not done and step < max_steps:
-                action = self.policy_net(
-                    self._state_to_tensor(state_idx).unsqueeze(0)
-                ).argmax().item()
+                action = (
+                    self.policy_net(self._state_to_tensor(state_idx).unsqueeze(0))
+                    .argmax()
+                    .item()
+                )
 
                 # state_idx, reward, terminated, truncated, _ = self.env.step(action)
                 state_idx, reward, terminated, truncated, _ = self.env.step_hist(action)
@@ -201,7 +262,9 @@ class DQNAgent:
                 step += 1
 
             if done and terminated:
-                print(f"✅  Épisode {ep} terminé : reward = {total_reward:+d}, steps = {step}")
+                print(
+                    f"✅  Épisode {ep} terminé : reward = {total_reward:+d}, steps = {step}"
+                )
             else:
                 print(f"⚠️  Épisode {ep} interrompu à {max_steps} steps (agent bloqué)")
 
